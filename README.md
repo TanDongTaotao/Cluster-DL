@@ -10,7 +10,7 @@
 2. Run train on MNIST.   
 `python train.py`     
 The DCEC model will be saved to "results/dcec/best_cae.pth".
-
+ 
 
 
 

@@ -12,13 +12,13 @@ class ClusteringLayer(nn.Module):
     """
     将输入样本转换为软标签的聚类层。使用t分布计算样本属于每个簇的概率。
     """
-    def __init__(self, n_clusters, n_features, alpha=1.0):
+    def __init__(self, n_clusters, n_features):
         super(ClusteringLayer, self).__init__()
         self.n_clusters = n_clusters
-        self.alpha = alpha
+        self.n_features = n_features
         # 初始化聚类中心
-        self.clusters = nn.Parameter(torch.Tensor(n_clusters, n_features))
-        torch.nn.init.xavier_uniform_(self.clusters)
+        self.weight = nn.Parameter(torch.Tensor(n_clusters, n_features))
+        torch.nn.init.xavier_uniform_(self.weight)
         
     def forward(self, x):
         """ t-分布计算概率
@@ -27,15 +27,20 @@ class ClusteringLayer(nn.Module):
         Returns:
             q: t-分布概率, shape=(batch_size, n_clusters)
         """
-        # 计算每个样本到各个聚类中心的距离
-        x_expand = x.unsqueeze(1).expand(-1, self.n_clusters, -1) 
-        cluster_expand = self.clusters.unsqueeze(0).expand(x.shape[0], -1, -1)
-        dist = torch.sum((x_expand - cluster_expand)**2, dim=2)
+        # 确保输入张量形状正确
+        if len(x.shape) > 2:
+            # 如果是卷积特征图，将其展平
+            x = x.view(x.size(0), -1)
         
-        # 计算t分布概率
-        q = 1.0 / (1.0 + (dist/self.alpha))
-        q = q**((self.alpha + 1.0)/2.0)
+        # 计算每个样本到聚类中心的距离
+        x_norm = torch.sum(x**2, dim=1, keepdim=True)
+        w_norm = torch.sum(self.weight**2, dim=1, keepdim=True)
+        dist = x_norm + w_norm.t() - 2 * torch.matmul(x, self.weight.t())
+        
+        # 计算 Student's t-distribution
+        q = 1.0 / (1.0 + dist)
         q = q / torch.sum(q, dim=1, keepdim=True)
+        
         return q
 
 class DCEC(nn.Module):
@@ -51,30 +56,40 @@ class DCEC(nn.Module):
         self.pretrained = False
         self.y_pred = []
         
-        # 初始化模型组件并移至GPU
+        # 计算特征维度
         self.cae = CAE(input_shape, filters).to(self.device)
-        self.clustering = ClusteringLayer(n_clusters, filters[-1]).to(self.device)
+        # 假设输入一个样本计算特征维度
+        with torch.no_grad():
+            dummy_input = torch.zeros((1,) + input_shape).to(self.device)
+            features = self.cae.encoder(dummy_input)
+            n_features = features.view(1, -1).size(1)
+        
+        self.clustering = ClusteringLayer(n_clusters, n_features).to(self.device)
         
     def forward(self, x):
-        # 获取编码器输出
+        # 获取编码器特征
         features = self.cae.encoder(x)
-        # 聚类层输出
-        q = self.clustering(features) 
-        # 重构输出
-        x_recon = self.cae.decoder(features)
-        return q, x_recon
+        # 展平特征
+        features_flat = features.view(features.size(0), -1)
+        # 计算聚类分布
+        q = self.clustering(features_flat)
+        
+        return q, features
 
-    def pretrain(self, train_loader, epochs=200, lr=0.001, optimizer=None, save_dir='results/temp'):
+    def pretrain(self, train_loader, epochs=200, lr=1e-4, optimizer=None, save_dir='results/temp'):
         """预训练CAE"""
         print('...Pretraining...')
+        
+        # 确保模型在GPU上
+        self.cae = self.cae.to(self.device)
+        
         if optimizer is None:
-            optimizer = torch.optim.AdamW(  # 使用AdamW优化器
+            optimizer = torch.optim.AdamW(
                 self.cae.parameters(),
                 lr=lr,
-                weight_decay=1e-4  # 添加权重衰减
+                weight_decay=1e-4
             )
         
-        # 使用余弦退火学习率调度器
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=epochs,
@@ -83,28 +98,34 @@ class DCEC(nn.Module):
         
         self.cae.train()
         best_loss = float('inf')
-        patience = 20  # 早停的耐心值
+        patience = 20
         patience_counter = 0
+        
+        # 添加CUDA事件来计时
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
         
         for epoch in range(epochs):
             total_loss = 0
+            start_event.record()
+            
             for batch_idx, batch in enumerate(train_loader):
                 if isinstance(batch, list):
                     x = batch[0]
                 else:
                     x = batch
                 
+                # 将数据移至GPU
                 x = x.to(self.device)
                 
-                # 添加噪声进行数据增强
-                noise = torch.randn_like(x) * 0.1
+                # 数据增强
+                noise = torch.randn_like(x, device=self.device) * 0.1
                 x_noisy = x + noise
                 x_noisy = torch.clamp(x_noisy, -1, 1)
                 
                 optimizer.zero_grad()
                 x_recon = self.cae(x_noisy)
                 
-                # 使用L1和L2损失的组合
                 mse_loss = F.mse_loss(x_recon, x)
                 l1_loss = F.l1_loss(x_recon, x)
                 loss = 0.8 * mse_loss + 0.2 * l1_loss
@@ -112,20 +133,33 @@ class DCEC(nn.Module):
                 total_loss += loss.item()
                 loss.backward()
                 
-                # 梯度裁剪
                 torch.nn.utils.clip_grad_norm_(self.cae.parameters(), max_norm=1.0)
-                
                 optimizer.step()
+                
+                # 打印批次进度
+                if (batch_idx + 1) % 20 == 0:
+                    print(f'Epoch [{epoch+1}/{epochs}] Batch [{batch_idx+1}/{len(train_loader)}] '
+                          f'Loss: {loss.item():.6f}')
+            
+            end_event.record()
+            torch.cuda.synchronize()
+            time_elapsed = start_event.elapsed_time(end_event) / 1000  # 转换为秒
             
             avg_loss = total_loss / len(train_loader)
-            print(f'Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.6f}, LR: {scheduler.get_last_lr()[0]:.6f}')
+            print(f'Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.6f}, '
+                  f'LR: {scheduler.get_last_lr()[0]:.6f}, Time: {time_elapsed:.2f}s')
             
             scheduler.step()
             
-            # 保存最佳模型和早停
+            # 保存最佳模型
             if avg_loss < best_loss:
                 best_loss = avg_loss
-                torch.save(self.cae.state_dict(), f'{save_dir}/best_cae.pth')
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': self.cae.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': best_loss,
+                }, f'{save_dir}/best_cae.pth')
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -178,7 +212,7 @@ class DCEC(nn.Module):
         kmeans = KMeans(n_clusters=self.n_clusters, n_init=20)
         y_pred = kmeans.fit_predict(features)
         y_pred_last = np.copy(y_pred)
-        self.clustering.clusters.data = torch.tensor(kmeans.cluster_centers_).to(self.device)
+        self.clustering.weight.data = torch.tensor(kmeans.cluster_centers_).to(self.device)
 
         # Step 3: 深度聚类
         # 创建日志文件
@@ -236,7 +270,7 @@ class DCEC(nn.Module):
                 optimizer.zero_grad()
                 
                 # 前向传播
-                q, x_recon = self(x)
+                q, _ = self(x)
                 
                 # 获取当前批次的目标分布
                 p_batch = p[batch_idx * train_loader.batch_size:
