@@ -17,11 +17,11 @@ from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 
 
 batch_size = 100
-latent_dim = 18
-epochs = 60
+latent_dim = 20
+epochs = 100
 num_classes = 10
 img_dim = 28
-filters = 18
+filters = 20
 intermediate_dim = 256
 
 # 加载MNIST数据集
@@ -207,8 +207,15 @@ train_metrics = evaluate_clustering(x_train_encoded, y_train_, y_train_pred)
 print("\n测试集评估:")
 test_metrics = evaluate_clustering(x_test_encoded, y_test_, y_test_pred)
 
-# x_test_encoded_3d = encoder.predict(x_test)[:, :3]  # 只取前三个维度用于可视化
+# # 3维展示
+# from sklearn.decomposition import PCA  # 添加PCA导入
+# # 获取编码后的潜在空间表示
+# x_test_encoded = encoder.predict(x_test)
+# # 使用PCA降到3维
+# pca = PCA(n_components=3)
+# x_test_encoded_3d = pca.fit_transform(x_test_encoded)
 # plot_latent_space_3d_interactive(x_test_encoded_3d, y_test_, title='Test Latent Space 3D')
+
 # 二维展示
 from sklearn.decomposition import PCA  # 添加PCA导入
 # 获取编码后的潜在空间表示
