@@ -1,15 +1,17 @@
-# Deep Clustering with Convolutional Autoencoders (DCEC)
+# Deep Clustering with VAE
 
 
 ## Usage
 1. use conda.
-`python==3.11`\
-`conda install pytorch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 pytorch-cuda=12.1 -c pytorch -c nvidia`
-`conda Install scikit-learn`
+`python==3.9.0`\
+`tensorflow==2.6.0`
+`matplotlib==3.9.2`
+`plotly==5.24.1`
+`scikit-learn==1.5.1`
 
 2. Run train on MNIST.   
 `python train.py`     
-The DCEC model will be saved to "results/dcec/best_cae.pth".
+
  
 
 

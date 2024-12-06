@@ -1,0 +1,19 @@
+训练集评估:
+
+聚类评估指标:
+轮廓系数 (Silhouette): 0.2906
+Calinski-Harabasz指数: 10922.3043
+Davies-Bouldin指数: 1.3985
+标准化互信息 (NMI): 0.8617
+调整兰德指数 (ARI): 0.8560
+
+测试集评估:
+
+聚类评估指标:
+轮廓系数 (Silhouette): 0.2967
+Calinski-Harabasz指数: 1884.6262
+Davies-Bouldin指数: 1.3676
+标准化互信息 (NMI): 0.8665
+调整兰德指数 (ARI): 0.8613
+train acc: 0.9304833333333333
+test acc: 0.933
